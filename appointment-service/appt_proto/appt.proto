@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package appt_proto;
+
+option go_package = "github.com/IsFariza/ap2-Caching-Strategies/appointment-service/appt_proto;appointmentpb";
+
+// AppointmentService handles the scheduling and status management of appointments
+service AppointmentService {
+    // CreateAppointment schedules a new patient-doctor meeting 
+    rpc CreateAppointment(CreateAppointmentRequest) returns (AppointmentResponse);
+    // GetAppointment retrieves specific details by ID
+    rpc GetAppointment(GetAppointmentRequest) returns (AppointmentResponse);
+    // ListAppointments returns a collection of all appointments 
+    rpc ListAppointments(ListAppointmentsRequest) returns (ListAppointmentsResponse);
+    // UpdateAppointmentStatus allows for transition between states 
+    rpc UpdateAppointmentStatus(UpdateStatusRequest) returns (AppointmentResponse);
+}
+message CreateAppointmentRequest {
+    string title = 1;
+    string description = 2;
+    string doctor_id = 3;
+}
+message GetAppointmentRequest { string id = 1; }
+message ListAppointmentsRequest {}
+message UpdateStatusRequest { string id = 1; string status = 2; }
+message AppointmentResponse {
+    string id = 1;
+    string title = 2;
+    string description = 3;
+    string doctor_id = 4;
+    string status = 5;
+    string created_at = 6;
+    string updated_at = 7;
+}
+message ListAppointmentsResponse { repeated AppointmentResponse appointments = 1; }
