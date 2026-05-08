@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package proto;
+
+option go_package = "github.com/IsFariza/ap2-Caching-Strategies/doctor-service/proto;doctorpb";
+
+// DoctorService provides endpoints for managing medical staff records
+service DoctorService {
+    // CreateDoctor adds new doctor to the system and returns the saved record
+    rpc CreateDoctor(CreateDoctorRequest) returns (DoctorResponse);
+    // GetDoctor retrieves a doctor by their unique identifier
+    rpc GetDoctor(GetDoctorRequest) returns (DoctorResponse);
+    // ListDoctors returns a list of all doctors currently in the database
+    rpc ListDoctors(ListDoctorsRequest) returns (ListDoctorsResponse);
+}
+
+// CreateDoctorRequest contains the necessary details to register a new doctor
+message CreateDoctorRequest {
+    string full_name = 1;
+    string specialization = 2;
+    string email = 3;
+}
+// GetDoctorRequest is used to look up a doctor by their unique ID.
+message GetDoctorRequest { string id = 1; }
+// ListDoctorsRequest is an empty message used to trigger a full list retrieval
+message ListDoctorsRequest {}
+// DoctorResponse represents the public-facing data for a doctor
+message DoctorResponse {
+    string id = 1;
+    string full_name = 2;
+    string specialization = 3;
+    string email = 4;
+}
+// ListDoctorsResponse contains a collection of doctor records.
+message ListDoctorsResponse { 
+    repeated DoctorResponse doctors = 1; 
+}
