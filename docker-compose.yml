@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  nats:
+    image: nats:latest
+    ports:
+      - "4222:4222"
+
+  postgres-doctor:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: doctor_db
+    ports:
+      - "5431:5432"
+
+  postgres-appointment:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: appointment_db
+    ports:
+      - "5432:5432"
+  doctor-service:
+    build: ./doctor-service
+    ports:
+      - "50051:50051"
+    environment:
+      - DATABASE_URL=postgres://user:password@postgres-doctor:5432/doctor_db?sslmode=disable
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      - postgres-doctor
+      - nats
+  appointment-service:
+    build: ./appointment-service
+    environment:
+      - DATABASE_URL=postgres://user:password@postgres-appointment:5432/appointment_db?sslmode=disable
+      - DOCTOR_ADDR=doctor-service:50051
+    ports:
+      - "50052:50052"
+    depends_on:
+      - postgres-appointment
+      - doctor-service
+  notification-service:
+    build: ./notification-service
+    environment:
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      - nats
