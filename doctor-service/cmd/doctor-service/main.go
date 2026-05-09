@@ -5,13 +5,17 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/IsFariza/ap2-Caching-Strategies/doctor-service/internal/event"
+	"github.com/IsFariza/ap2-Caching-Strategies/doctor-service/internal/middleware"
 	"github.com/IsFariza/ap2-Caching-Strategies/doctor-service/internal/repository"
 	doctorGRPC "github.com/IsFariza/ap2-Caching-Strategies/doctor-service/internal/transport/grpc"
 	"github.com/IsFariza/ap2-Caching-Strategies/doctor-service/internal/usecase"
 	doctorpb "github.com/IsFariza/ap2-Caching-Strategies/doctor-service/proto"
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -29,16 +33,31 @@ func main() {
 	dbURL := os.Getenv("DATABASE_URL")
 	natsURL := os.Getenv("NATS_URL")
 	port := os.Getenv("PORT")
+	redisURL := os.Getenv("REDIS_URL")
 
-	db, err := sql.Open("postgres", dbURL)
+	var db *sql.DB
+	var err error
+	log.Printf("Connecting to doctor-db at %s...", dbURL)
+
+	for i := 0; i < 10; i++ {
+		db, err = sql.Open("postgres", dbURL)
+		if err == nil {
+			err = db.Ping()
+		}
+
+		if err == nil {
+			log.Println("Successfully connected to doctor-db!")
+			break
+		}
+
+		log.Printf("Doctor-db not ready (attempt %d/10): %v. Retrying in 2s...", i+1, err)
+		time.Sleep(2 * time.Second)
+	}
+
 	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+		log.Fatalf("Failed to connect to database after retries: %v", err)
 	}
 	defer db.Close()
-
-	if err := db.Ping(); err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
-	}
 	runMigrations(db)
 
 	nc, err := nats.Connect(natsURL)
@@ -47,17 +66,37 @@ func main() {
 	} else {
 		defer nc.Close()
 	}
-	repo := repository.NewDoctorRepository(db)
+
+	ttlStr := os.Getenv("CACHE_TTL_SECONDS")
+	ttl, _ := strconv.Atoi(ttlStr)
+	if ttl == 0 {
+		ttl = 60
+	}
+
+	opts, err := redis.ParseURL(redisURL)
+	var rdb *redis.Client
+	if err == nil {
+		rdb = redis.NewClient(opts)
+	} else {
+		log.Printf("Redis unavailable: %v", err)
+	}
+
+	rawRepo := repository.NewDoctorRepository(db)
+	repo := repository.NewDoctorCacheProxy(rawRepo, rdb, ttl)
 	pub := event.NewDoctorPublisher(nc)
 	uc := usecase.NewDoctorUseCase(repo, pub)
 	handler := doctorGRPC.NewDoctorHandler(uc)
+
+	limitRPM, _ := strconv.Atoi(os.Getenv("RATE_LIMIT_RPM"))
 
 	lis, err := net.Listen("tcp", ":"+port)
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 
-	s := grpc.NewServer()
+	s := grpc.NewServer(
+		grpc.UnaryInterceptor(middleware.RateLimitInterceptor(rdb, limitRPM)),
+	)
 	doctorpb.RegisterDoctorServiceServer(s, handler)
 
 	log.Printf("Doctor Service starting on port %s...", port)
