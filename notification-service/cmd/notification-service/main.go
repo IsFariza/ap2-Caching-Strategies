@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"os/signal"
@@ -9,29 +10,24 @@ import (
 	"github.com/IsFariza/ap2-Caching-Strategies/notification-service/internal/jobqueue"
 	"github.com/IsFariza/ap2-Caching-Strategies/notification-service/internal/subscriber"
 	"github.com/joho/godotenv"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
 	_ = godotenv.Load()
-	natsURL := os.Getenv("NATS_URL")
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
-	rdb := redis.NewClient(&redis.Options{
-		Addr: os.Getenv("REDIS_URL"),
-	})
-	wp := jobqueue.NewWorkerPool(rdb, 100)
-	wp.Start(5)
-
+	queue := jobqueue.New(ctx)
 	subjects := []string{
 		"doctors.created",
 		"appointments.created",
 		"appointments.status_updated"}
 
-	nc := subscriber.HandleEvents(natsURL, subjects, wp)
+	nc := subscriber.HandleEvents(os.Getenv("NATS_URL"), subjects, func(subject string, data []byte) {
+		queue.EnqueueFromEvent(ctx, subject, data)
+	})
 	defer nc.Drain()
 
 	log.Println("Notification Service running ")
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
+	<-ctx.Done()
 }

@@ -1,6 +1,11 @@
 package models
 
 type Job struct {
-	AppointmentID string `json:"appointment_id"`
-	NewStatus     string `json:"new_status"`
+	IdempotencyKey string `json:"idempotency_key"`
+	AppointmentID  string `json:"appointment_id"`
+	DoctorID       string `json:"doctor_id"`
+	OccurredAt     string `json:"occurred_at"`
+	Channel        string `json:"channel"`
+	Recipient      string `json:"recipient"`
+	Message        string `json:"message"`
 }
