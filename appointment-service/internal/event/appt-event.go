@@ -40,17 +40,19 @@ func (p *appointmentPublisher) PublishCreated(appt *model.Appointment) error {
 	return p.nc.Publish("appointments.created", data)
 }
 
-func (p *appointmentPublisher) PublishStatusUpdated(id string, oldS, newS model.Status) {
+func (p *appointmentPublisher) PublishStatusUpdated(appt *model.Appointment, oldS, newS model.Status) {
 	payload := struct {
 		EventType  string       `json:"event_type"`
 		OccurredAt string       `json:"occurred_at"`
 		ID         string       `json:"id"`
+		DoctorID   string       `json:"doctor_id"`
 		OldStatus  model.Status `json:"old_status"`
 		NewStatus  model.Status `json:"new_status"`
 	}{
 		EventType:  "appointments.status_updated",
 		OccurredAt: time.Now().Format(time.RFC3339),
-		ID:         id,
+		ID:         appt.ID,
+		DoctorID:   appt.DoctorID,
 		OldStatus:  oldS,
 		NewStatus:  newS,
 	}

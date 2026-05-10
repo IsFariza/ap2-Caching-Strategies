@@ -81,6 +81,8 @@ func (uc *appointmentUsecase) Update(ctx context.Context, id string, newStatus m
 		return err
 	}
 
-	uc.publisher.PublishStatusUpdated(id, currentStatus.Status, newStatus)
+	oldStatus := currentStatus.Status
+	currentStatus.Status = newStatus
+	uc.publisher.PublishStatusUpdated(currentStatus, oldStatus, newStatus)
 	return nil
 }

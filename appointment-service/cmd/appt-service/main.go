@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"net"
@@ -8,98 +9,89 @@ import (
 	"time"
 
 	pb "github.com/IsFariza/ap2-Caching-Strategies/appointment-service/appt_proto"
+	"github.com/IsFariza/ap2-Caching-Strategies/appointment-service/internal/cache"
 	"github.com/IsFariza/ap2-Caching-Strategies/appointment-service/internal/client"
 	"github.com/IsFariza/ap2-Caching-Strategies/appointment-service/internal/event"
 	"github.com/IsFariza/ap2-Caching-Strategies/appointment-service/internal/middleware"
 	"github.com/IsFariza/ap2-Caching-Strategies/appointment-service/internal/repository"
-	apptGRPC "github.com/IsFariza/ap2-Caching-Strategies/appointment-service/internal/transport/grpc"
+	transport "github.com/IsFariza/ap2-Caching-Strategies/appointment-service/internal/transport/grpc"
 	"github.com/IsFariza/ap2-Caching-Strategies/appointment-service/internal/usecase"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/nats-io/nats.go"
-	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Println(".env not found")
-	}
+	ctx := context.Background()
 
-	dbURL := os.Getenv("DATABASE_URL")
-	natsURL := os.Getenv("NATS_URL")
-	grpcPort := os.Getenv("PORT")
-	doctorServiceAddr := os.Getenv("DOCTOR_ADDR")
-	redisURL := os.Getenv("REDIS_URL")
-
-	var db *sql.DB
-	var err error
-	log.Printf("Connecting to database at %s...", dbURL)
-
-	for i := 0; i < 10; i++ {
-		db, err = sql.Open("postgres", dbURL)
-		if err == nil {
-			err = db.Ping()
-		}
-
-		if err == nil {
-			log.Println("Successfully connected to the database!")
-			break
-		}
-
-		log.Printf("Database not ready yet (attempt %d/10): %v. Retrying in 2s...", i+1, err)
-		time.Sleep(2 * time.Second)
-	}
-
+	db, err := sql.Open("postgres", requiredEnv("DATABASE_URL"))
 	if err != nil {
-		log.Fatalf("Could not connect to database after multiple attempts: %v", err)
+		log.Fatalf("open database: %v", err)
 	}
 	defer db.Close()
-
-	runMigrations(db)
-	runMigrations(db)
-
-	nc, err := nats.Connect(natsURL)
-	if err != nil {
-		log.Printf("NATS connection failed: %v", err)
-	} else {
-		defer nc.Close()
+	if err := pingDB(ctx, db); err != nil {
+		log.Fatalf("connect database: %v", err)
 	}
+	runMigrations(db)
 
-	doctorConn, err := grpc.NewClient(doctorServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	doctorConn, err := grpc.NewClient(envOrDefault("DOCTOR_ADDR", "localhost:50051"), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("Could not connect to Doctor Service: %v", err)
+		log.Fatalf("connect doctor service: %v", err)
 	}
 	defer doctorConn.Close()
 
-	rdb := redis.NewClient(&redis.Options{
-		Addr: redisURL})
-
-	doctorClient := client.NewDoctorClient(doctorConn)
-	rawRepo := repository.NewAppointmentRepository(db)
-	repo := repository.NewAppointmentCacheProxy(rawRepo, rdb, 60)
-	pub := event.NewAppointmentPublisher(nc)
-	uc := usecase.NewAppointmentUsecase(repo, doctorClient, pub)
-	handler := apptGRPC.NewAppointmentHandler(uc)
-
-	lis, err := net.Listen("tcp", ":"+grpcPort)
+	nc, err := nats.Connect(envOrDefault("NATS_URL", nats.DefaultURL))
 	if err != nil {
-		log.Fatalf("Failed to listen on %s: %v", grpcPort, err)
+		log.Fatalf("connect nats: %v", err)
+	}
+	defer nc.Drain()
+
+	baseRepo := repository.NewAppointmentRepository(db)
+	cacheRepo := cache.NewRedisRepository(ctx)
+	apptRepo := repository.NewCachedAppointmentRepository(baseRepo, cacheRepo)
+	doctorClient := client.NewDoctorClient(doctorConn)
+	publisher := event.NewAppointmentPublisher(nc)
+	uc := usecase.NewAppointmentUsecase(apptRepo, doctorClient, publisher)
+	handler := transport.NewAppointmentHandler(uc)
+	limiter := middleware.NewRateLimiter(ctx)
+
+	port := envOrDefault("GRPC_PORT", "50052")
+	lis, err := net.Listen("tcp", ":"+port)
+	if err != nil {
+		log.Fatalf("listen grpc: %v", err)
 	}
 
-	s := grpc.NewServer(
-		grpc.UnaryInterceptor(middleware.RateLimitInterceptor(rdb, 100)),
-	)
-	pb.RegisterAppointmentServiceServer(s, handler)
-
-	log.Printf("Appointment Service starting on port %s", grpcPort)
-	if err := s.Serve(lis); err != nil {
-		log.Fatalf("Failed to serve: %v", err)
+	server := grpc.NewServer(grpc.UnaryInterceptor(limiter.UnaryServerInterceptor()))
+	pb.RegisterAppointmentServiceServer(server, handler)
+	log.Printf("Appointment Service listening on :%s", port)
+	if err := server.Serve(lis); err != nil {
+		log.Fatalf("serve grpc: %v", err)
 	}
+}
+
+func requiredEnv(key string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		log.Fatalf("%s is required", key)
+	}
+	return value
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func pingDB(ctx context.Context, db *sql.DB) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return db.PingContext(ctx)
 }
 
 func runMigrations(db *sql.DB) {
