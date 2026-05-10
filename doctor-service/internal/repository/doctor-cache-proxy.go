@@ -2,81 +2,106 @@ package repository
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"log"
-	"time"
 
 	"github.com/IsFariza/ap2-Caching-Strategies/doctor-service/internal/model"
 	"github.com/IsFariza/ap2-Caching-Strategies/doctor-service/internal/model/interfaces"
-	"github.com/redis/go-redis/v9"
 )
 
-type doctorCacheProxy struct {
-	repo interfaces.DoctorRepository
-	rdb  *redis.Client
-	ttl  time.Duration
+type cachedDoctorRepository struct {
+	next  interfaces.DoctorRepository
+	cache interfaces.Repository
 }
 
-func NewDoctorCacheProxy(repo interfaces.DoctorRepository, rdb *redis.Client, ttlSeconds int) interfaces.DoctorRepository {
-	return &doctorCacheProxy{
-		repo: repo,
-		rdb:  rdb,
-		ttl:  time.Duration(ttlSeconds) * time.Second,
-	}
+func NewCachedDoctorRepository(next interfaces.DoctorRepository, cacheRepo interfaces.Repository) interfaces.DoctorRepository {
+	return &cachedDoctorRepository{next: next, cache: cacheRepo}
 }
 
-func (p *doctorCacheProxy) GetById(ctx context.Context, id string) (*model.Doctor, error) {
-	key := fmt.Sprintf("doctor:%s", id)
-	val, err := p.rdb.Get(ctx, key).Result()
-	if err == nil {
-		var doc model.Doctor
-		if err := json.Unmarshal([]byte(val), &doc); err == nil {
-			return &doc, nil
-		}
-	}
-	doc, err := p.repo.GetById(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	data, _ := json.Marshal(doc)
-	if err := p.rdb.Set(ctx, key, data, p.ttl).Err(); err != nil {
-		log.Printf("Cache write failure: %v", err)
-	}
-	return doc, nil
-}
-
-func (p *doctorCacheProxy) GetAll(ctx context.Context) ([]*model.Doctor, error) {
-	key := "doctor:list"
-	val, err := p.rdb.Get(ctx, key).Result()
-	if err == nil {
-		var docs []*model.Doctor
-		if err := json.Unmarshal([]byte(val), &docs); err == nil {
-			return docs, nil
-		}
-	}
-	docs, err := p.repo.GetAll(ctx)
-	if err != nil {
-		return nil, err
-	}
-	data, _ := json.Marshal(docs)
-	p.rdb.Set(ctx, key, data, p.ttl)
-
-	return docs, nil
-}
-func (p *doctorCacheProxy) Create(ctx context.Context, doc *model.Doctor) error {
-
-	err := p.repo.Create(ctx, doc)
-	if err != nil {
+func (r *cachedDoctorRepository) Create(ctx context.Context, doctor *model.Doctor) error {
+	if err := r.next.Create(ctx, doctor); err != nil {
 		return err
 	}
 
-	if err := p.rdb.Del(ctx, "doctors:list").Err(); err != nil {
-		log.Printf("Cache invalidation failure: %v", err)
+	key := "doctor:" + doctor.ID
+	if err := r.cache.Set(ctx, key, doctor); err != nil {
+		log.Printf("cache set failed key=%s error=%v", key, err)
+	} else {
+		logCache("doctor-service", "set", key)
+	}
+
+	if err := r.cache.Delete(ctx, "doctors:list"); err != nil {
+		log.Printf("cache delete failed key=doctors:list error=%v", err)
+	} else {
+		logCache("doctor-service", "delete", "doctors:list")
 	}
 
 	return nil
 }
-func (p *doctorCacheProxy) GetByEmail(ctx context.Context, email string) (*model.Doctor, error) {
-	return p.repo.GetByEmail(ctx, email)
+
+func (r *cachedDoctorRepository) GetById(ctx context.Context, id string) (*model.Doctor, error) {
+	key := "doctor:" + id
+
+	var doctor model.Doctor
+	hit, err := r.cache.Get(ctx, key, &doctor)
+	if err != nil {
+		log.Printf("cache get failed key=%s error=%v", key, err)
+	}
+
+	if hit {
+		logCache("doctor-service", "hit", key)
+		return &doctor, nil
+	}
+
+	logCache("doctor-service", "miss", key)
+
+	found, err := r.next.GetById(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := r.cache.Set(ctx, key, found); err != nil {
+		log.Printf("cache set failed key=%s error=%v", key, err)
+	} else {
+		logCache("doctor-service", "set", key)
+	}
+
+	return found, nil
+}
+
+func (r *cachedDoctorRepository) GetAll(ctx context.Context) ([]*model.Doctor, error) {
+	const key = "doctors:list"
+
+	var doctors []*model.Doctor
+	hit, err := r.cache.Get(ctx, key, &doctors)
+	if err != nil {
+		log.Printf("cache get failed key=%s error=%v", key, err)
+	}
+
+	if hit {
+		logCache("doctor-service", "hit", key)
+		return doctors, nil
+	}
+
+	logCache("doctor-service", "miss", key)
+
+	doctors, err = r.next.GetAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := r.cache.Set(ctx, key, doctors); err != nil {
+		log.Printf("cache set failed key=%s error=%v", key, err)
+	} else {
+		logCache("doctor-service", "set", key)
+	}
+
+	return doctors, nil
+}
+
+func (r *cachedDoctorRepository) GetByEmail(ctx context.Context, email string) (*model.Doctor, error) {
+	return r.next.GetByEmail(ctx, email)
+}
+
+func logCache(service, status, key string) {
+	log.Printf(`{"service":"%s","component":"cache","status":"%s","key":"%s"}`, service, status, key)
 }

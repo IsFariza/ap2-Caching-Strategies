@@ -5,8 +5,7 @@ go 1.25.6
 require (
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
-	github.com/joho/godotenv v1.5.1
-	github.com/lib/pq v1.12.3
+	github.com/lib/pq v1.10.9
 	github.com/nats-io/nats.go v1.52.0
 	github.com/redis/go-redis/v9 v9.19.0
 	google.golang.org/grpc v1.81.0
